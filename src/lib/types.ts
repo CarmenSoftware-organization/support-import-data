@@ -63,6 +63,31 @@ export interface ImportResult {
   errors: string[];
 }
 
+export interface SheetTableMapping {
+  sheetName: string;
+  tableName: string | null;
+  schema: string;
+  columnMappings: ColumnMapping[];
+  validation: ValidationResult | null;
+  isEnabled: boolean;
+}
+
+export interface MultiSheetValidationResult {
+  sheetName: string;
+  tableName: string;
+  schema: string;
+  validation: ValidationResult;
+}
+
+export interface MultiSheetImportResult {
+  sheetName: string;
+  tableName: string;
+  success: boolean;
+  importedCount: number;
+  skippedCount: number;
+  errors: string[];
+}
+
 export type DataType =
   | 'string'
   | 'number'

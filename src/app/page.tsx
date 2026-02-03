@@ -94,9 +94,17 @@ export default function Home() {
             Import data from Excel files to your PostgreSQL database
           </p>
         </div>
-        <Link href="/config">
-          <Button variant="outline">Settings</Button>
-        </Link>
+        <div className="flex gap-2">
+          <Link href="/preconfig/wizard">
+            <Button>Preconfig Wizard</Button>
+          </Link>
+          <Link href="/preconfig">
+            <Button variant="outline">Multi-Sheet Import</Button>
+          </Link>
+          <Link href="/config">
+            <Button variant="outline">Settings</Button>
+          </Link>
+        </div>
       </div>
 
       {isNotConfigured ? (
