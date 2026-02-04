@@ -5,12 +5,13 @@ interface TruncateRequest {
   tableName: string;
   schema: string;
   cascade?: boolean;
+  connectionId?: string;
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: TruncateRequest = await request.json();
-    const { tableName, schema, cascade = false } = body;
+    const { tableName, schema, cascade = false, connectionId } = body;
 
     if (!tableName || !schema) {
       return NextResponse.json(
@@ -19,7 +20,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const pool = getPool();
+    const pool = getPool(connectionId);
     if (!pool) {
       return NextResponse.json(
         { error: 'Database not configured' },

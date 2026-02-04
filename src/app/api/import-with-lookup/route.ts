@@ -54,12 +54,13 @@ interface ImportWithLookupRequest {
   relatedInserts?: RelatedInsertConfig[];
   skipInvalid?: boolean;
   truncateEnabled?: boolean;  // If true, skip unique check against database
+  connectionId?: string;  // Optional: specify which database connection to use
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: ImportWithLookupRequest = await request.json();
-    const { tableName, schema, mappings, rows, lookups = [], uniqueCheck, defaultValues = [], relatedInserts = [], skipInvalid = true, truncateEnabled = false } = body;
+    const { tableName, schema, mappings, rows, lookups = [], uniqueCheck, defaultValues = [], relatedInserts = [], skipInvalid = true, truncateEnabled = false, connectionId } = body;
 
     if (!tableName || !mappings || !rows) {
       return NextResponse.json(
@@ -68,7 +69,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const pool = getPool();
+    const pool = getPool(connectionId);
     if (!pool) {
       return NextResponse.json(
         { error: 'Database not configured' },
@@ -303,6 +304,29 @@ export async function POST(request: NextRequest) {
 
     // Validate data
     const validationResult = validateData(processedRows, extendedMappings, tableColumns);
+
+    // Preserve _existingId from processedRows to validRows for upsert mode
+    // The validation creates new transformed rows, so we need to restore _existingId
+    if (uniqueCheck?.mode === 'upsert') {
+      validationResult.validRows.forEach((validRow, index) => {
+        // Find the corresponding processedRow by matching the unique key columns
+        const matchingProcessedRow = processedRows.find(procRow => {
+          return uniqueCheck.columns.every(dbCol => {
+            const excelCol = Array.from(excelToDbMap.entries())
+              .find(([, db]) => db === dbCol)?.[0];
+            const validValue = String(validRow[dbCol] || '').toLowerCase().trim();
+            const procValue = excelCol
+              ? String(procRow[excelCol] || '').toLowerCase().trim()
+              : String(procRow[dbCol] || '').toLowerCase().trim();
+            return validValue === procValue;
+          });
+        });
+
+        if (matchingProcessedRow && matchingProcessedRow._existingId) {
+          validRow._existingId = matchingProcessedRow._existingId;
+        }
+      });
+    }
 
     // Add lookup errors to validation
     if (lookupErrors.length > 0) {

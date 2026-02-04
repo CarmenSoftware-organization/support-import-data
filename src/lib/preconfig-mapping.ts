@@ -49,11 +49,40 @@ export interface PreconfigStep {
   lookups?: LookupConfig[];
   uniqueCheck?: UniqueCheckConfig;
   relatedInserts?: RelatedInsertConfig[];
+  connectionId?: string; // Optional: specify which database connection to use (defaults to 'main')
 }
 
 // Predefined mapping configuration for Preconfig.xlsx
 // Based on actual database schema in T01
 export const PRECONFIG_STEPS: PreconfigStep[] = [
+  {
+    id: 'company-profile',
+    sheetName: 'Company Profile',
+    tableName: 'tb_business_unit',
+    displayName: 'Business Unit / Company Profile',
+    description: 'Business unit information (imports to CARMEN_SYSTEM schema)',
+    connectionId: '814666ba-8ef7-44c3-bc0e-d892cd56b348', // SYSTEM connection (CARMEN_SYSTEM schema)
+    columnMappings: [
+      { excelColumn: 'BU Code', dbColumn: 'code' },
+      { excelColumn: 'Hotel Name', dbColumn: 'hotel_name' },
+      { excelColumn: 'Hotel Tel', dbColumn: 'hotel_tel' },
+      { excelColumn: 'Hotel Email', dbColumn: 'hotel_email' },
+      { excelColumn: 'Hotel Address', dbColumn: 'hotel_address' },
+      { excelColumn: 'Hotel Zip Code', dbColumn: 'hotel_zip_code' },
+      { excelColumn: 'Company Name (*Mandatory*)', dbColumn: 'company_name' },
+      { excelColumn: 'Company  Tel', dbColumn: 'company_tel' },
+      { excelColumn: 'Company  Email', dbColumn: 'company_email' },
+      { excelColumn: 'Company Address', dbColumn: 'company_address' },
+      { excelColumn: 'Company  Zip Code', dbColumn: 'company_zip_code' },
+      { excelColumn: 'Tax ID (*Mandatory*)', dbColumn: 'tax_no' },
+      { excelColumn: 'Branch No (*Mandatory*)', dbColumn: 'branch_no' },
+      { excelColumn: 'Inventory Cost Type (*Mandatory*)', dbColumn: 'inventory_cost_type' },
+    ],
+    uniqueCheck: {
+      columns: ['code'],
+      mode: 'upsert',
+    },
+  },
   {
     id: 'currency',
     sheetName: 'Currency',
@@ -340,6 +369,7 @@ export function stepHasLookups(stepId: string): boolean {
 // Get the order of import (dependencies first)
 export function getImportOrder(): string[] {
   return [
+    'company-profile',  // No dependencies (separate database)
     'currency',       // No dependencies
     'unit',           // No dependencies
     'tax-profile',    // No dependencies

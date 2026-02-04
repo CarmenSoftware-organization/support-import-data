@@ -59,13 +59,25 @@ interface StepStatus {
   columnMappings: ColumnMapping[];
   truncateEnabled: boolean;
   truncateCascade: boolean;
+  connectionId: string;  // Selected database connection for this step
+  schema: string;        // Selected schema for this step
+  progress?: {           // Import progress tracking
+    current: number;
+    total: number;
+    message: string;
+  };
+}
+
+interface Connection {
+  id: string;        // UUID
+  name: string;      // User-friendly display name
 }
 
 type ValidationFilter = 'all' | 'valid' | 'error' | 'duplicate';
 
 export default function PreconfigWizardPage() {
-  const [currentSchema, setCurrentSchema] = useState<string>('');
-  const [schemas, setSchemas] = useState<string[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [schemasPerConnection, setSchemasPerConnection] = useState<Map<string, string[]>>(new Map());
   const [parsedExcel, setParsedExcel] = useState<ParsedExcel | null>(null);
   const [tableSchemas, setTableSchemas] = useState<Map<string, TableSchema>>(new Map());
   const [currentStepIndex, setCurrentStepIndex] = useState<number>(-1); // -1 = upload step
@@ -84,47 +96,57 @@ export default function PreconfigWizardPage() {
   const currentStep = currentStepIndex >= 0 ? availableSteps[currentStepIndex] : null;
   const currentStatus = currentStep ? stepStatuses.get(currentStep.id) : null;
 
-  // Fetch schemas on mount
+  // Fetch connections on mount
   useEffect(() => {
-    async function fetchSchemas() {
+    async function fetchConnections() {
       try {
-        const response = await fetch('/api/schemas');
+        const response = await fetch('/api/config/list');
         const data = await response.json();
-        if (data.schemas) {
-          setSchemas(data.schemas);
+        if (data.connections) {
+          const connList: Connection[] = Object.entries(data.connections).map(([id, conn]: [string, any]) => ({
+            id,
+            name: conn.name || id,  // Use name from config, fallback to ID
+          }));
+          setConnections(connList);
+
+          // Fetch schemas for each connection
+          const schemasMap = new Map<string, string[]>();
+          for (const conn of connList) {
+            try {
+              const schemaResponse = await fetch(`/api/schemas?connectionId=${conn.id}`);
+              const schemaData = await schemaResponse.json();
+              if (schemaData.schemas) {
+                schemasMap.set(conn.id, schemaData.schemas);
+              }
+            } catch {
+              // Skip if schemas fetch fails for this connection
+            }
+          }
+          setSchemasPerConnection(schemasMap);
         }
       } catch {
         // Silently fail
       }
     }
-    fetchSchemas();
+    fetchConnections();
   }, []);
 
   // Fetch default schema
-  useEffect(() => {
-    async function fetchTables() {
-      try {
-        const response = await fetch('/api/tables');
-        const data = await response.json();
-        if (data.currentSchema && !currentSchema) {
-          setCurrentSchema(data.currentSchema);
-        }
-      } catch {
-        // Silently fail
-      }
-    }
-    fetchTables();
-  }, [currentSchema]);
-
-  // Fetch table schema
-  const fetchTableSchema = async (tableName: string): Promise<TableSchema | null> => {
-    const cacheKey = `${currentSchema}.${tableName}`;
+  // Fetch table schema with specific connection and schema
+  const fetchTableSchema = async (
+    tableName: string,
+    schema: string,
+    connectionId: string
+  ): Promise<TableSchema | null> => {
+    const cacheKey = `${connectionId}.${schema}.${tableName}`;
     if (tableSchemas.has(cacheKey)) {
       return tableSchemas.get(cacheKey)!;
     }
 
     try {
-      const response = await fetch(`/api/tables/${tableName}?schema=${currentSchema}`);
+      const response = await fetch(
+        `/api/tables/${tableName}?schema=${schema}&connectionId=${connectionId}`
+      );
       const data = await response.json();
       if (response.ok) {
         setTableSchemas((prev) => new Map(prev).set(cacheKey, data));
@@ -139,6 +161,69 @@ export default function PreconfigWizardPage() {
   // Get sheet data for a step
   const getSheetData = (step: PreconfigStep): SheetData | undefined => {
     return parsedExcel?.sheets.find((s) => s.name === step.sheetName);
+  };
+
+  // Save step configuration (column mappings + database config) to localStorage
+  const saveStepConfig = (stepId: string, mappings: ColumnMapping[], connectionId: string, schema: string) => {
+    try {
+      const key = `step-config-${stepId}`;
+      const configData = {
+        mappings: mappings.map(m => ({
+          excelColumn: m.excelColumn,
+          dbColumn: m.dbColumn,
+        })),
+        connectionId,
+        schema,
+      };
+      localStorage.setItem(key, JSON.stringify(configData));
+    } catch (err) {
+      console.error('Failed to save step configuration:', err);
+    }
+  };
+
+  // Load step configuration from localStorage
+  const loadStepConfig = (stepId: string): { mappings: ColumnMapping[], connectionId: string, schema: string } | null => {
+    try {
+      const key = `step-config-${stepId}`;
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (err) {
+      console.error('Failed to load step configuration:', err);
+    }
+    return null;
+  };
+
+  // Legacy: Load old column mappings (for backward compatibility)
+  const loadColumnMappings = (stepId: string): ColumnMapping[] | null => {
+    try {
+      const key = `column-mappings-${stepId}`;
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (err) {
+      console.error('Failed to load column mappings:', err);
+    }
+    return null;
+  };
+
+  // Clear saved step configuration
+  const clearSavedMappings = (stepId: string) => {
+    try {
+      // Clear new format
+      const newKey = `step-config-${stepId}`;
+      localStorage.removeItem(newKey);
+
+      // Clear legacy format (for backward compatibility)
+      const legacyKey = `column-mappings-${stepId}`;
+      localStorage.removeItem(legacyKey);
+
+      toast.info('Saved configuration cleared');
+    } catch (err) {
+      console.error('Failed to clear saved configuration:', err);
+    }
   };
 
   // Handle file upload
@@ -169,6 +254,56 @@ export default function PreconfigWizardPage() {
       PRECONFIG_STEPS.forEach((step) => {
         if (sheetNames.has(step.sheetName)) {
           const sheet = data.sheets.find((s: SheetData) => s.name === step.sheetName);
+
+          // Try to load saved step configuration
+          const savedConfig = loadStepConfig(step.id);
+          let columnMappings: ColumnMapping[] = [];
+          let connectionId: string;
+          let schema: string;
+
+          if (savedConfig) {
+            // Use saved configuration
+            connectionId = savedConfig.connectionId;
+            schema = savedConfig.schema;
+
+            if (sheet) {
+              // Use saved mappings but update with current sheet's sample values
+              columnMappings = sheet.columns.map((excelCol: string) => {
+                const saved = savedConfig.mappings.find(m => m.excelColumn === excelCol);
+                return {
+                  excelColumn: excelCol,
+                  dbColumn: saved?.dbColumn || null,
+                  sampleValues: sheet.rows.slice(0, 3).map((row: Record<string, unknown>) => row[excelCol]),
+                };
+              });
+            }
+            toast.success(`Loaded saved configuration for ${step.displayName}`);
+          } else {
+            // Check for legacy saved mappings (backward compatibility)
+            const savedMappings = loadColumnMappings(step.id);
+
+            // Determine default connection and schema
+            connectionId = step.connectionId || connections[0]?.id || 'main';
+            const schemasForConnection = schemasPerConnection.get(connectionId) || [];
+            schema = schemasForConnection[0] || 'public';
+
+            if (savedMappings && sheet) {
+              // Use legacy saved mappings
+              columnMappings = sheet.columns.map((excelCol: string) => {
+                const saved = savedMappings.find(m => m.excelColumn === excelCol);
+                return {
+                  excelColumn: excelCol,
+                  dbColumn: saved?.dbColumn || null,
+                  sampleValues: sheet.rows.slice(0, 3).map((row: Record<string, unknown>) => row[excelCol]),
+                };
+              });
+              toast.success(`Loaded saved column mappings for ${step.displayName}`);
+            } else if (sheet) {
+              // Use default mappings from step configuration
+              columnMappings = createColumnMappings(step, sheet.columns, sheet.rows);
+            }
+          }
+
           initialStatuses.set(step.id, {
             stepId: step.id,
             status: 'pending',
@@ -176,11 +311,11 @@ export default function PreconfigWizardPage() {
             importedCount: 0,
             truncatedCount: 0,
             error: null,
-            columnMappings: sheet
-              ? createColumnMappings(step, sheet.columns, sheet.rows)
-              : [],
+            columnMappings,
             truncateEnabled: false,
             truncateCascade: false,
+            connectionId,
+            schema,
           });
         }
       });
@@ -252,6 +387,49 @@ export default function PreconfigWizardPage() {
     });
   };
 
+  // Change connection for current step
+  const handleConnectionChange = async (connectionId: string) => {
+    if (!currentStep) return;
+
+    setStepStatuses((prev) => {
+      const newMap = new Map(prev);
+      const status = newMap.get(currentStep.id);
+      if (status) {
+        // Get schemas for the new connection
+        const schemasForConnection = schemasPerConnection.get(connectionId) || [];
+        const newSchema = schemasForConnection[0] || 'public';
+
+        newMap.set(currentStep.id, {
+          ...status,
+          connectionId,
+          schema: newSchema,
+          status: 'pending',
+          validation: null,
+        });
+      }
+      return newMap;
+    });
+  };
+
+  // Change schema for current step
+  const handleSchemaChange = (schema: string) => {
+    if (!currentStep) return;
+
+    setStepStatuses((prev) => {
+      const newMap = new Map(prev);
+      const status = newMap.get(currentStep.id);
+      if (status) {
+        newMap.set(currentStep.id, {
+          ...status,
+          schema,
+          status: 'pending',
+          validation: null,
+        });
+      }
+      return newMap;
+    });
+  };
+
   // Validate current step
   const handleValidate = async () => {
     if (!currentStep || !parsedExcel) return;
@@ -289,11 +467,12 @@ export default function PreconfigWizardPage() {
 
       const requestBody: Record<string, unknown> = {
         tableName: currentStep.tableName,
-        schema: currentSchema,
+        schema: status.schema,
         mappings: status.columnMappings,
         rows: sheet.rows,
         skipInvalid: false,
         truncateEnabled: status.truncateEnabled,  // Skip DB unique check if truncate is enabled
+        connectionId: status.connectionId,
       };
 
       // Add lookups config if available
@@ -361,25 +540,53 @@ export default function PreconfigWizardPage() {
     const status = stepStatuses.get(currentStep.id);
     if (!sheet || !status || !status.validation) return;
 
+    const updateProgress = (current: number, total: number, message: string) => {
+      setStepStatuses((prev) => {
+        const newMap = new Map(prev);
+        const currentStatus = newMap.get(currentStep.id);
+        if (currentStatus) {
+          newMap.set(currentStep.id, {
+            ...currentStatus,
+            status: 'importing',
+            progress: { current, total, message },
+          });
+        }
+        return newMap;
+      });
+    };
+
     setStepStatuses((prev) => {
       const newMap = new Map(prev);
-      newMap.set(currentStep.id, { ...status, status: 'importing' });
+      newMap.set(currentStep.id, {
+        ...status,
+        status: 'importing',
+        progress: { current: 0, total: sheet.rows.length, message: 'Starting import...' },
+      });
       return newMap;
     });
 
     let truncatedCount = 0;
+    let progressInterval: NodeJS.Timeout | null = null;
 
     try {
+      // Get step config for lookups, unique checks, default values, and related inserts
+      const stepConfig = getStepById(currentStep.id);
+
       // Truncate table first if enabled
       if (status.truncateEnabled) {
+        updateProgress(0, sheet.rows.length, 'Truncating table...');
+
+        const truncateBody: Record<string, unknown> = {
+          tableName: currentStep.tableName,
+          schema: status.schema,
+          cascade: status.truncateCascade,
+          connectionId: status.connectionId,
+        };
+
         const truncateResponse = await fetch('/api/truncate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tableName: currentStep.tableName,
-            schema: currentSchema,
-            cascade: status.truncateCascade,
-          }),
+          body: JSON.stringify(truncateBody),
         });
 
         const truncateData = await truncateResponse.json();
@@ -391,9 +598,6 @@ export default function PreconfigWizardPage() {
         truncatedCount = truncateData.deletedCount || 0;
         toast.info(`Truncated ${truncatedCount} existing rows`);
       }
-
-      // Get step config for lookups, unique checks, default values, and related inserts
-      const stepConfig = getStepById(currentStep.id);
       const hasLookups = (stepConfig?.lookups?.length ?? 0) > 0;
       const hasUniqueCheck = !!stepConfig?.uniqueCheck;
       const hasRelatedInserts = (stepConfig?.relatedInserts?.length ?? 0) > 0;
@@ -407,16 +611,20 @@ export default function PreconfigWizardPage() {
         })) || [];
       const hasDefaultValues = defaultValues.length > 0;
 
+      // Prepare import
+      updateProgress(0, sheet.rows.length, `Validating ${sheet.rows.length} rows...`);
+
       // Use import-with-lookup API if step has lookups, unique checks, default values, or related inserts
       const apiEndpoint = (hasLookups || hasUniqueCheck || hasDefaultValues || hasRelatedInserts) ? '/api/import-with-lookup' : '/api/import';
 
       const requestBody: Record<string, unknown> = {
         tableName: currentStep.tableName,
-        schema: currentSchema,
+        schema: status.schema,
         mappings: status.columnMappings,
         rows: sheet.rows,
         skipInvalid: true,
         truncateEnabled: status.truncateEnabled,  // Skip DB unique check if truncate is enabled
+        connectionId: status.connectionId,
       };
 
       // Add lookups config if available
@@ -439,6 +647,26 @@ export default function PreconfigWizardPage() {
         requestBody.relatedInserts = stepConfig.relatedInserts;
       }
 
+      // Simulate progress during import with animation
+      const totalRows = sheet.rows.length;
+      const estimatedTimePerRow = 50; // ms per row (adjust based on testing)
+      const updateInterval = 100; // Update every 100ms
+
+      let simulatedProgress = 0;
+      progressInterval = setInterval(() => {
+        simulatedProgress += Math.ceil(totalRows / (estimatedTimePerRow * totalRows / updateInterval));
+        if (simulatedProgress < totalRows) {
+          updateProgress(
+            Math.min(simulatedProgress, totalRows - 1),
+            totalRows,
+            `Importing rows to ${currentStep.tableName}...`
+          );
+        }
+      }, updateInterval);
+
+      // Import data
+      updateProgress(0, totalRows, `Importing to ${currentStep.tableName}...`);
+
       const response = await fetch(apiEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -447,7 +675,19 @@ export default function PreconfigWizardPage() {
 
       const data = await response.json();
 
+      // Clear the progress interval
+      if (progressInterval) clearInterval(progressInterval);
+
       if (data.success) {
+        // Show final progress before completion
+        updateProgress(data.importedCount, totalRows, `Completed! Imported ${data.importedCount} rows`);
+
+        // Wait a moment to show the completion
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Save complete step configuration (mappings + database config) for future use
+        saveStepConfig(currentStep.id, status.columnMappings, status.connectionId, status.schema);
+
         setStepStatuses((prev) => {
           const newMap = new Map(prev);
           newMap.set(currentStep.id, {
@@ -455,6 +695,7 @@ export default function PreconfigWizardPage() {
             status: 'completed',
             importedCount: data.importedCount,
             truncatedCount,
+            progress: undefined,  // Clear progress
           });
           return newMap;
         });
@@ -464,12 +705,16 @@ export default function PreconfigWizardPage() {
         throw new Error(data.message || 'Import failed');
       }
     } catch (err) {
+      // Clear the progress interval on error
+      if (progressInterval) clearInterval(progressInterval);
+
       setStepStatuses((prev) => {
         const newMap = new Map(prev);
         newMap.set(currentStep.id, {
           ...status,
           status: 'error',
           error: err instanceof Error ? err.message : 'Import failed',
+          progress: undefined,  // Clear progress
         });
         return newMap;
       });
@@ -531,19 +776,23 @@ export default function PreconfigWizardPage() {
 
   // Get table schema for current step
   useEffect(() => {
-    if (currentStep && currentSchema) {
-      fetchTableSchema(currentStep.tableName);
+    if (currentStep && currentStatus) {
+      fetchTableSchema(
+        currentStep.tableName,
+        currentStatus.schema,
+        currentStatus.connectionId
+      );
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentStep, currentSchema]);
+  }, [currentStep, currentStatus?.schema, currentStatus?.connectionId]);
 
   // Reset validation filter when step changes
   useEffect(() => {
     setValidationFilter('all');
   }, [currentStepIndex]);
 
-  const currentTableSchema = currentStep
-    ? tableSchemas.get(`${currentSchema}.${currentStep.tableName}`)
+  const currentTableSchema = currentStep && currentStatus
+    ? tableSchemas.get(`${currentStatus.connectionId}.${currentStatus.schema}.${currentStep.tableName}`)
     : undefined;
 
   // Calculate summary
@@ -570,23 +819,6 @@ export default function PreconfigWizardPage() {
             Step-by-step import of configuration data from Excel
           </p>
         </div>
-        {schemas.length > 0 && currentStepIndex >= 0 && (
-          <div className="flex items-center gap-3">
-            <label className="text-sm font-medium">Schema:</label>
-            <Select value={currentSchema} onValueChange={setCurrentSchema}>
-              <SelectTrigger className="w-[150px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {schemas.map((schema) => (
-                  <SelectItem key={schema} value={schema}>
-                    {schema}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
       </div>
 
       {/* Upload Step */}
@@ -723,11 +955,84 @@ export default function PreconfigWizardPage() {
                           Sheet: <code className="bg-muted px-1 rounded">{currentStep.sheetName}</code>
                         </p>
                         <p className="text-sm text-muted-foreground">
-                          Table: <code className="bg-muted px-1 rounded">{currentSchema}.{currentStep.tableName}</code>
+                          Table: <code className="bg-muted px-1 rounded">{currentStatus.schema}.{currentStep.tableName}</code>
                         </p>
                       </div>
                     </div>
                   </CardHeader>
+                </Card>
+
+                {/* Database Connection and Schema Selection */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Database Configuration</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-sm font-medium mb-2 block">
+                          Database Connection
+                        </label>
+                        <Select
+                          value={currentStatus.connectionId}
+                          onValueChange={handleConnectionChange}
+                          disabled={currentStatus.status === 'completed' || currentStatus.status === 'importing'}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select connection" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {connections.map((conn) => (
+                              <SelectItem key={conn.id} value={conn.id}>
+                                {conn.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Choose which database to import this sheet to
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="text-sm font-medium mb-2 block">
+                          Schema
+                        </label>
+                        <Select
+                          value={currentStatus.schema}
+                          onValueChange={handleSchemaChange}
+                          disabled={currentStatus.status === 'completed' || currentStatus.status === 'importing'}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select schema" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(schemasPerConnection.get(currentStatus.connectionId) || []).map((schema) => (
+                              <SelectItem key={schema} value={schema}>
+                                {schema}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Choose the schema in the selected database
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="text-sm bg-muted p-3 rounded-lg">
+                      <p className="font-medium">Import Target</p>
+                      <p className="text-muted-foreground text-xs mt-1">
+                        <code className="bg-background px-1.5 py-0.5 rounded">
+                          {currentStatus.connectionId}
+                        </code>
+                        {' → '}
+                        <code className="bg-background px-1.5 py-0.5 rounded">
+                          {currentStatus.schema}.{currentStep.tableName}
+                        </code>
+                      </p>
+                    </div>
+                  </CardContent>
                 </Card>
 
                 {/* Truncate Option */}
@@ -847,10 +1152,43 @@ export default function PreconfigWizardPage() {
                 {/* Column Mapping */}
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-base">Column Mapping</CardTitle>
-                    <p className="text-sm text-muted-foreground">
-                      Map Excel columns to database columns
-                    </p>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-base">Column Mapping</CardTitle>
+                        <p className="text-sm text-muted-foreground">
+                          Map Excel columns to database columns
+                        </p>
+                      </div>
+                      {(loadStepConfig(currentStep.id) || loadColumnMappings(currentStep.id)) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            clearSavedMappings(currentStep.id);
+                            // Reset to default mappings
+                            const sheet = getSheetData(currentStep);
+                            if (sheet) {
+                              const defaultMappings = createColumnMappings(currentStep, sheet.columns, sheet.rows);
+                              setStepStatuses((prev) => {
+                                const newMap = new Map(prev);
+                                const status = newMap.get(currentStep.id);
+                                if (status) {
+                                  newMap.set(currentStep.id, {
+                                    ...status,
+                                    columnMappings: defaultMappings,
+                                    status: 'pending',
+                                    validation: null,
+                                  });
+                                }
+                                return newMap;
+                              });
+                            }
+                          }}
+                        >
+                          Reset to Default
+                        </Button>
+                      )}
+                    </div>
                   </CardHeader>
                   <CardContent>
                     <div className="border rounded-lg overflow-hidden">
@@ -1188,10 +1526,43 @@ export default function PreconfigWizardPage() {
                     )}
 
                     {currentStatus.status === 'importing' && (
-                      <Button disabled>
-                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                        Importing...
-                      </Button>
+                      <div className="w-full">
+                        <Button disabled className="mb-4">
+                          <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                          Importing...
+                        </Button>
+                        {currentStatus.progress && (
+                          <div className="space-y-3 p-4 rounded-lg border bg-card">
+                            <div className="flex justify-between items-center text-sm">
+                              <span className="text-muted-foreground font-medium">{currentStatus.progress.message}</span>
+                              <span className="font-semibold text-lg tabular-nums">
+                                {Math.round((currentStatus.progress.current / currentStatus.progress.total) * 100)}%
+                              </span>
+                            </div>
+                            <div className="relative w-full h-6 bg-muted rounded-full overflow-hidden shadow-inner">
+                              <div
+                                className="absolute inset-0 bg-gradient-to-r from-blue-500 via-blue-600 to-blue-700 transition-all duration-500 ease-out rounded-full shadow-md"
+                                style={{
+                                  width: `${(currentStatus.progress.current / currentStatus.progress.total) * 100}%`,
+                                }}
+                              >
+                                <div className="absolute inset-0 bg-gradient-to-t from-transparent via-white/20 to-transparent animate-pulse" />
+                              </div>
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <span className="text-xs font-bold text-white drop-shadow-md mix-blend-difference">
+                                  {currentStatus.progress.current} / {currentStatus.progress.total}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex justify-between text-xs text-muted-foreground">
+                              <span>Processing records...</span>
+                              <span className="font-mono">
+                                {currentStatus.progress.current}/{currentStatus.progress.total} completed
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     )}
 
                     {(currentStatus.status === 'completed' || currentStatus.status === 'skipped') && (

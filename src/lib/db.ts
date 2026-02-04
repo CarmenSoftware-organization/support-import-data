@@ -2,40 +2,59 @@ import { Pool } from 'pg';
 import { TableInfo, ColumnInfo, TableSchema } from './types';
 import { getConnectionString } from './config';
 
-let pool: Pool | null = null;
-let currentConnectionString: string | null = null;
+// Map of connection ID to pool instances
+const pools = new Map<string, Pool>();
+const connectionStrings = new Map<string, string>();
 
-export function getPool(): Pool {
-  const connectionString = getConnectionString();
+export function getPool(connectionId?: string): Pool {
+  const id = connectionId || 'main';
+  const connectionString = getConnectionString(connectionId);
 
   if (!connectionString) {
-    throw new Error('Database not configured. Please configure the database connection in Settings.');
+    throw new Error(
+      `Database connection "${id}" not configured. Please configure the database connection in Settings.`
+    );
   }
 
   // Reset pool if connection string changed
-  if (pool && currentConnectionString !== connectionString) {
-    pool.end();
-    pool = null;
+  const currentConnectionString = connectionStrings.get(id);
+  if (pools.has(id) && currentConnectionString !== connectionString) {
+    pools.get(id)?.end();
+    pools.delete(id);
+    connectionStrings.delete(id);
   }
 
-  if (!pool) {
-    pool = new Pool({ connectionString });
-    currentConnectionString = connectionString;
+  // Create new pool if doesn't exist
+  if (!pools.has(id)) {
+    const pool = new Pool({ connectionString });
+    pools.set(id, pool);
+    connectionStrings.set(id, connectionString);
   }
 
-  return pool;
+  return pools.get(id)!;
 }
 
-export async function resetPool(): Promise<void> {
-  if (pool) {
-    await pool.end();
-    pool = null;
-    currentConnectionString = null;
+export async function resetPool(connectionId?: string): Promise<void> {
+  if (connectionId) {
+    // Reset specific pool
+    const pool = pools.get(connectionId);
+    if (pool) {
+      await pool.end();
+      pools.delete(connectionId);
+      connectionStrings.delete(connectionId);
+    }
+  } else {
+    // Reset all pools
+    for (const [id, pool] of pools.entries()) {
+      await pool.end();
+      pools.delete(id);
+      connectionStrings.delete(id);
+    }
   }
 }
 
-export async function getTables(): Promise<TableInfo[]> {
-  const client = await getPool().connect();
+export async function getTables(connectionId?: string): Promise<TableInfo[]> {
+  const client = await getPool(connectionId).connect();
   try {
     const result = await client.query(`
       SELECT table_name as name, table_schema as schema
@@ -52,9 +71,10 @@ export async function getTables(): Promise<TableInfo[]> {
 
 export async function getTableSchema(
   tableName: string,
-  schema: string = 'public'
+  schema: string = 'public',
+  connectionId?: string
 ): Promise<TableSchema> {
-  const client = await getPool().connect();
+  const client = await getPool(connectionId).connect();
   try {
     // Get column information
     const columnsResult = await client.query(
@@ -107,9 +127,10 @@ export async function insertRows(
   tableName: string,
   schema: string,
   columns: string[],
-  rows: Record<string, unknown>[]
+  rows: Record<string, unknown>[],
+  connectionId?: string
 ): Promise<{ inserted: number; errors: string[] }> {
-  const client = await getPool().connect();
+  const client = await getPool(connectionId).connect();
   const errors: string[] = [];
   let inserted = 0;
 
@@ -151,9 +172,10 @@ export async function insertRows(
 export async function getTableData(
   tableName: string,
   schema: string = 'public',
-  limit?: number
+  limit?: number,
+  connectionId?: string
 ): Promise<Record<string, unknown>[]> {
-  const client = await getPool().connect();
+  const client = await getPool(connectionId).connect();
   try {
     const quotedTable = `"${schema}"."${tableName}"`;
     const query = limit
@@ -166,9 +188,9 @@ export async function getTableData(
   }
 }
 
-export async function testConnection(): Promise<boolean> {
+export async function testConnection(connectionId?: string): Promise<boolean> {
   try {
-    const client = await getPool().connect();
+    const client = await getPool(connectionId).connect();
     await client.query('SELECT 1');
     client.release();
     return true;

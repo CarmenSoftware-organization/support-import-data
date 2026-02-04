@@ -1,9 +1,12 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const pool = getPool();
+    const { searchParams } = new URL(request.url);
+    const connectionId = searchParams.get('connectionId') || undefined;
+
+    const pool = getPool(connectionId);
     const client = await pool.connect();
 
     try {

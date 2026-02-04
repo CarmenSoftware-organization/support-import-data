@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Pool } from 'pg';
-import { DatabaseConfig } from '@/lib/config';
 
 // POST - Test connection without saving
 export async function POST(request: NextRequest) {
   try {
-    const body: DatabaseConfig = await request.json();
+    const body = await request.json();
 
     // Validate required fields
     if (!body.host || !body.database || !body.username) {
@@ -15,7 +14,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const config: DatabaseConfig = {
+    const config = {
       host: body.host,
       port: body.port || 5432,
       database: body.database,

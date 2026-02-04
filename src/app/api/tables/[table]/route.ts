@@ -9,8 +9,9 @@ export async function GET(
     const { table } = await params;
     const url = new URL(request.url);
     const schema = url.searchParams.get('schema') || 'public';
+    const connectionId = url.searchParams.get('connectionId') || undefined;
 
-    const tableSchema = await getTableSchema(table, schema);
+    const tableSchema = await getTableSchema(table, schema, connectionId);
 
     if (tableSchema.columns.length === 0) {
       return NextResponse.json(
