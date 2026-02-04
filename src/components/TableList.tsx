@@ -10,9 +10,10 @@ interface TableListProps {
   isLoading?: boolean;
   error?: string | null;
   currentSchema?: string;
+  connectionId?: string;
 }
 
-export function TableList({ tables, isLoading, error, currentSchema }: TableListProps) {
+export function TableList({ tables, isLoading, error, currentSchema, connectionId }: TableListProps) {
   if (isLoading) {
     return (
       <Card>
@@ -49,6 +50,7 @@ export function TableList({ tables, isLoading, error, currentSchema }: TableList
         <div className="grid gap-2">
           {tables.map((table) => {
             const schema = currentSchema || table.schema;
+            const connParam = connectionId ? `&connectionId=${connectionId}` : '';
             return (
               <div
                 key={`${schema}.${table.name}`}
@@ -56,16 +58,16 @@ export function TableList({ tables, isLoading, error, currentSchema }: TableList
               >
                 <span className="font-medium">{table.name}</span>
                 <div className="flex gap-2">
-                  <Link href={`/import/${table.name}?schema=${schema}`}>
+                  <Link href={`/import/${table.name}?schema=${schema}${connParam}`}>
                     <Button size="sm">Import</Button>
                   </Link>
-                  <Link href={`/export/${table.name}?schema=${schema}`}>
+                  <Link href={`/export/${table.name}?schema=${schema}${connParam}`}>
                     <Button size="sm" variant="outline">
                       Export
                     </Button>
                   </Link>
                   <a
-                    href={`/api/template/${table.name}?schema=${schema}`}
+                    href={`/api/template/${table.name}?schema=${schema}${connParam}`}
                     download
                   >
                     <Button size="sm" variant="ghost">

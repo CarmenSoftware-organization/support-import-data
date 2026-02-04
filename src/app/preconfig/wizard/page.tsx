@@ -71,13 +71,13 @@ interface StepStatus {
 interface Connection {
   id: string;        // UUID
   name: string;      // User-friendly display name
+  schema: string;    // Default schema for this connection
 }
 
 type ValidationFilter = 'all' | 'valid' | 'error' | 'duplicate';
 
 export default function PreconfigWizardPage() {
   const [connections, setConnections] = useState<Connection[]>([]);
-  const [schemasPerConnection, setSchemasPerConnection] = useState<Map<string, string[]>>(new Map());
   const [parsedExcel, setParsedExcel] = useState<ParsedExcel | null>(null);
   const [tableSchemas, setTableSchemas] = useState<Map<string, TableSchema>>(new Map());
   const [currentStepIndex, setCurrentStepIndex] = useState<number>(-1); // -1 = upload step
@@ -106,23 +106,9 @@ export default function PreconfigWizardPage() {
           const connList: Connection[] = Object.entries(data.connections).map(([id, conn]: [string, any]) => ({
             id,
             name: conn.name || id,  // Use name from config, fallback to ID
+            schema: conn.schema || 'public',  // Default schema for this connection
           }));
           setConnections(connList);
-
-          // Fetch schemas for each connection
-          const schemasMap = new Map<string, string[]>();
-          for (const conn of connList) {
-            try {
-              const schemaResponse = await fetch(`/api/schemas?connectionId=${conn.id}`);
-              const schemaData = await schemaResponse.json();
-              if (schemaData.schemas) {
-                schemasMap.set(conn.id, schemaData.schemas);
-              }
-            } catch {
-              // Skip if schemas fetch fails for this connection
-            }
-          }
-          setSchemasPerConnection(schemasMap);
         }
       } catch {
         // Silently fail
@@ -284,8 +270,8 @@ export default function PreconfigWizardPage() {
 
             // Determine default connection and schema
             connectionId = step.connectionId || connections[0]?.id || 'main';
-            const schemasForConnection = schemasPerConnection.get(connectionId) || [];
-            schema = schemasForConnection[0] || 'public';
+            const selectedConnection = connections.find(c => c.id === connectionId);
+            schema = selectedConnection?.schema || 'public';
 
             if (savedMappings && sheet) {
               // Use legacy saved mappings
@@ -395,33 +381,14 @@ export default function PreconfigWizardPage() {
       const newMap = new Map(prev);
       const status = newMap.get(currentStep.id);
       if (status) {
-        // Get schemas for the new connection
-        const schemasForConnection = schemasPerConnection.get(connectionId) || [];
-        const newSchema = schemasForConnection[0] || 'public';
+        // Get schema from the selected connection
+        const selectedConnection = connections.find(c => c.id === connectionId);
+        const newSchema = selectedConnection?.schema || 'public';
 
         newMap.set(currentStep.id, {
           ...status,
           connectionId,
           schema: newSchema,
-          status: 'pending',
-          validation: null,
-        });
-      }
-      return newMap;
-    });
-  };
-
-  // Change schema for current step
-  const handleSchemaChange = (schema: string) => {
-    if (!currentStep) return;
-
-    setStepStatuses((prev) => {
-      const newMap = new Map(prev);
-      const status = newMap.get(currentStep.id);
-      if (status) {
-        newMap.set(currentStep.id, {
-          ...status,
-          schema,
           status: 'pending',
           validation: null,
         });
@@ -968,69 +935,48 @@ export default function PreconfigWizardPage() {
                     <CardTitle className="text-base">Database Configuration</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="text-sm font-medium mb-2 block">
-                          Database Connection
-                        </label>
-                        <Select
-                          value={currentStatus.connectionId}
-                          onValueChange={handleConnectionChange}
-                          disabled={currentStatus.status === 'completed' || currentStatus.status === 'importing'}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select connection" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {connections.map((conn) => (
-                              <SelectItem key={conn.id} value={conn.id}>
-                                {conn.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Choose which database to import this sheet to
-                        </p>
-                      </div>
-
-                      <div>
-                        <label className="text-sm font-medium mb-2 block">
-                          Schema
-                        </label>
-                        <Select
-                          value={currentStatus.schema}
-                          onValueChange={handleSchemaChange}
-                          disabled={currentStatus.status === 'completed' || currentStatus.status === 'importing'}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select schema" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {(schemasPerConnection.get(currentStatus.connectionId) || []).map((schema) => (
-                              <SelectItem key={schema} value={schema}>
-                                {schema}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Choose the schema in the selected database
-                        </p>
-                      </div>
+                    <div>
+                      <label className="text-sm font-medium mb-2 block">
+                        Database Connection
+                      </label>
+                      <Select
+                        value={currentStatus.connectionId}
+                        onValueChange={handleConnectionChange}
+                        disabled={currentStatus.status === 'completed' || currentStatus.status === 'importing'}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select connection" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {connections.map((conn) => (
+                            <SelectItem key={conn.id} value={conn.id}>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{conn.name}</span>
+                                <span className="text-xs text-muted-foreground">({conn.schema})</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Choose which database connection to import to. The schema is automatically selected based on the connection.
+                      </p>
                     </div>
 
                     <div className="text-sm bg-muted p-3 rounded-lg">
-                      <p className="font-medium">Import Target</p>
-                      <p className="text-muted-foreground text-xs mt-1">
-                        <code className="bg-background px-1.5 py-0.5 rounded">
-                          {currentStatus.connectionId}
+                      <p className="font-medium mb-1">Import Target</p>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-muted-foreground">Connection:</span>
+                        <code className="bg-background px-1.5 py-0.5 rounded font-semibold">
+                          {connections.find(c => c.id === currentStatus.connectionId)?.name || currentStatus.connectionId}
                         </code>
-                        {' → '}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs mt-1">
+                        <span className="text-muted-foreground">Table:</span>
                         <code className="bg-background px-1.5 py-0.5 rounded">
                           {currentStatus.schema}.{currentStep.tableName}
                         </code>
-                      </p>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>

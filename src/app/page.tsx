@@ -14,41 +14,62 @@ import {
 } from '@/components/ui/select';
 import { TableInfo } from '@/lib/types';
 
+interface Connection {
+  id: string;
+  name: string;
+  schema: string;
+}
+
 export default function Home() {
   const [tables, setTables] = useState<TableInfo[]>([]);
-  const [schemas, setSchemas] = useState<string[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [currentConnectionId, setCurrentConnectionId] = useState<string>('');
   const [currentSchema, setCurrentSchema] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isNotConfigured, setIsNotConfigured] = useState(false);
 
-  // Fetch schemas
+  // Fetch connections
   useEffect(() => {
-    async function fetchSchemas() {
+    async function fetchConnections() {
       try {
-        const response = await fetch('/api/schemas');
+        const response = await fetch('/api/config/list');
         const data = await response.json();
-        if (data.schemas) {
-          setSchemas(data.schemas);
+        if (data.connections) {
+          const connList: Connection[] = Object.entries(data.connections).map(([id, conn]: [string, any]) => ({
+            id,
+            name: conn.name || id,
+            schema: conn.schema || 'public',
+          }));
+          setConnections(connList);
+
+          // Set default connection
+          if (data.default) {
+            setCurrentConnectionId(data.default);
+            const defaultConn = connList.find(c => c.id === data.default);
+            if (defaultConn) {
+              setCurrentSchema(defaultConn.schema);
+            }
+          }
         }
       } catch (err) {
         // Silently fail
       }
     }
 
-    fetchSchemas();
+    fetchConnections();
   }, []);
 
   // Fetch tables
   useEffect(() => {
     async function fetchTables() {
+      if (!currentConnectionId) return;
+
       setIsLoading(true);
       setError(null);
 
       try {
-        const url = currentSchema
-          ? `/api/tables?schema=${currentSchema}`
-          : '/api/tables';
+        const url = `/api/tables?connectionId=${currentConnectionId}&schema=${currentSchema}`;
         const response = await fetch(url);
         const data = await response.json();
 
@@ -61,11 +82,6 @@ export default function Home() {
         }
 
         setTables(data.tables);
-
-        // Set current schema from response if not already set
-        if (!currentSchema && data.currentSchema) {
-          setCurrentSchema(data.currentSchema);
-        }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         if (message.includes('not configured') || message.includes('DATABASE_URL')) {
@@ -79,10 +95,14 @@ export default function Home() {
     }
 
     fetchTables();
-  }, [currentSchema]);
+  }, [currentConnectionId, currentSchema]);
 
-  const handleSchemaChange = (value: string) => {
-    setCurrentSchema(value);
+  const handleConnectionChange = (connectionId: string) => {
+    setCurrentConnectionId(connectionId);
+    const connection = connections.find(c => c.id === connectionId);
+    if (connection) {
+      setCurrentSchema(connection.schema);
+    }
   };
 
   return (
@@ -123,22 +143,31 @@ export default function Home() {
         </Card>
       ) : (
         <>
-          {/* Schema Selector */}
-          {schemas.length > 0 && (
-            <div className="mb-6 flex items-center gap-3">
-              <label className="text-sm font-medium">Schema:</label>
-              <Select value={currentSchema} onValueChange={handleSchemaChange}>
-                <SelectTrigger className="w-[200px]">
-                  <SelectValue placeholder="Select schema" />
-                </SelectTrigger>
-                <SelectContent>
-                  {schemas.map((schema) => (
-                    <SelectItem key={schema} value={schema}>
-                      {schema}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          {/* Connection Selector */}
+          {connections.length > 0 && (
+            <div className="mb-6">
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm font-medium whitespace-nowrap">Database Connection:</label>
+                    <Select value={currentConnectionId} onValueChange={handleConnectionChange}>
+                      <SelectTrigger className="w-[300px]">
+                        <SelectValue placeholder="Select connection" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {connections.map((connection) => (
+                          <SelectItem key={connection.id} value={connection.id}>
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium">{connection.name}</span>
+                              <span className="text-xs text-muted-foreground">({connection.schema})</span>
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </CardContent>
+              </Card>
             </div>
           )}
 
@@ -147,6 +176,7 @@ export default function Home() {
             isLoading={isLoading}
             error={error}
             currentSchema={currentSchema}
+            connectionId={currentConnectionId}
           />
         </>
       )}
