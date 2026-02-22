@@ -118,9 +118,6 @@ export default function Home() {
           <Link href="/preconfig/wizard">
             <Button>Preconfig Wizard</Button>
           </Link>
-          <Link href="/preconfig">
-            <Button variant="outline">Multi-Sheet Import</Button>
-          </Link>
           <Link href="/config">
             <Button variant="outline">Settings</Button>
           </Link>
