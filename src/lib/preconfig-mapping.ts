@@ -29,7 +29,7 @@ export interface RelatedInsertConfig {
       lookupColumn: string;
       lookupResultColumn: string;
     };
-    staticValue?: string | number;  // If source is 'static'
+    staticValue?: string | number | boolean;  // If source is 'static'
   }[];
 }
 
@@ -111,6 +111,10 @@ export const PRECONFIG_STEPS: PreconfigStep[] = [
       { excelColumn: 'Code', dbColumn: 'name' },
       { excelColumn: 'Description', dbColumn: 'description' },
     ],
+    uniqueCheck: {
+      columns: ['name'],
+      mode: 'skip',
+    },
   },
   {
     id: 'tax-profile',
@@ -122,6 +126,10 @@ export const PRECONFIG_STEPS: PreconfigStep[] = [
       { excelColumn: 'Name', dbColumn: 'name' },
       { excelColumn: 'Value', dbColumn: 'tax_rate' },
     ],
+    uniqueCheck: {
+      columns: ['name'],
+      mode: 'skip',
+    },
   },
   {
     id: 'delivery-point',
@@ -132,6 +140,10 @@ export const PRECONFIG_STEPS: PreconfigStep[] = [
     columnMappings: [
       { excelColumn: 'Code', dbColumn: 'name' },
     ],
+    uniqueCheck: {
+      columns: ['name'],
+      mode: 'skip',
+    },
   },
   {
     id: 'department',
@@ -143,6 +155,10 @@ export const PRECONFIG_STEPS: PreconfigStep[] = [
       { excelColumn: 'Code', dbColumn: 'code' },
       { excelColumn: 'Description', dbColumn: 'name' },
     ],
+    uniqueCheck: {
+      columns: ['code'],
+      mode: 'skip',
+    },
   },
   {
     id: 'location',
@@ -332,6 +348,60 @@ export const PRECONFIG_STEPS: PreconfigStep[] = [
       },
     ],
   },
+  {
+    id: 'vendor',
+    sheetName: 'Vendor',
+    tableName: 'tb_vendor',
+    displayName: 'Vendors',
+    description: 'Vendor/Supplier master data (with tax profile lookup and contact info)',
+    columnMappings: [
+      { excelColumn: 'VnCode', dbColumn: 'code' },
+      { excelColumn: 'VnName', dbColumn: 'name' },
+      { excelColumn: 'Active', dbColumn: 'is_active' },
+      { excelColumn: 'TaxProfileCode1', dbColumn: 'tax_profile_name' },
+    ],
+    lookups: [
+      {
+        sourceColumn: 'TaxProfileCode1',
+        targetColumn: 'tax_profile_id',
+        lookupTable: 'tb_tax_profile',
+        lookupColumn: 'name',
+        lookupResultColumn: 'id',
+      },
+    ],
+    uniqueCheck: {
+      columns: ['code'],
+      mode: 'skip',
+    },
+    relatedInserts: [
+      {
+        tableName: 'tb_vendor_contact',
+        condition: {
+          sourceColumns: ['VnPayee'],
+        },
+        columns: [
+          { dbColumn: 'vendor_id', source: 'parent_id' },
+          { dbColumn: 'name', source: 'excel', excelColumn: 'VnPayee' },
+          { dbColumn: 'phone', source: 'excel', excelColumn: 'VnTel' },
+          { dbColumn: 'email', source: 'excel', excelColumn: 'VnEmail' },
+          { dbColumn: 'is_primary', source: 'static', staticValue: true },
+        ],
+      },
+      {
+        tableName: 'tb_vendor_contact',
+        condition: {
+          sourceColumns: ['Vn2Payee'],
+        },
+        columns: [
+          { dbColumn: 'vendor_id', source: 'parent_id' },
+          { dbColumn: 'name', source: 'excel', excelColumn: 'Vn2Payee' },
+          { dbColumn: 'phone', source: 'excel', excelColumn: 'Vn2Tel' },
+          { dbColumn: 'email', source: 'excel', excelColumn: 'Vn2Email' },
+          { dbColumn: 'is_primary', source: 'static', staticValue: false },
+        ],
+      },
+    ],
+  },
 ];
 
 export function getStepBySheetName(sheetName: string): PreconfigStep | undefined {
@@ -380,5 +450,6 @@ export function getImportOrder(): string[] {
     'product-subcategory', // Depends on product-category
     'item-group',     // Depends on product-subcategory
     'product',        // Depends on unit
+    'vendor',         // Depends on tax-profile
   ];
 }

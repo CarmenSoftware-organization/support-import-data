@@ -292,8 +292,14 @@ export async function POST(request: NextRequest) {
     // Create extended mappings that include lookup target columns
     const extendedMappings: ColumnMapping[] = [...mappings];
     for (const lookup of lookups) {
-      // Add the target column mapping if not already present
-      if (!extendedMappings.find(m => m.dbColumn === lookup.targetColumn)) {
+      const existingIndex = extendedMappings.findIndex(m => m.dbColumn === lookup.targetColumn);
+      if (existingIndex >= 0) {
+        // Replace existing mapping to use the looked-up value (UUID) instead of raw Excel value
+        extendedMappings[existingIndex] = {
+          ...extendedMappings[existingIndex],
+          excelColumn: lookup.targetColumn,
+        };
+      } else {
         extendedMappings.push({
           excelColumn: lookup.targetColumn,
           dbColumn: lookup.targetColumn,
