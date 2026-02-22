@@ -22,9 +22,14 @@ interface DefaultValueConfig {
   value: string | 'CURRENT_TIMESTAMP';
 }
 
+interface JsonbFieldMapping {
+  jsonKey: string;
+  excelColumn: string;
+}
+
 interface RelatedInsertColumn {
   dbColumn: string;
-  source: 'excel' | 'lookup' | 'static' | 'parent_id';
+  source: 'excel' | 'lookup' | 'static' | 'parent_id' | 'jsonb';
   excelColumn?: string;
   lookupConfig?: {
     sourceColumn: string;
@@ -32,7 +37,8 @@ interface RelatedInsertColumn {
     lookupColumn: string;
     lookupResultColumn: string;
   };
-  staticValue?: string | number;
+  staticValue?: string | number | boolean;
+  jsonbFields?: JsonbFieldMapping[];
 }
 
 interface RelatedInsertConfig {
@@ -311,27 +317,23 @@ export async function POST(request: NextRequest) {
     // Validate data
     const validationResult = validateData(processedRows, extendedMappings, tableColumns);
 
-    // Preserve _existingId from processedRows to validRows for upsert mode
-    // The validation creates new transformed rows, so we need to restore _existingId
-    if (uniqueCheck?.mode === 'upsert') {
-      validationResult.validRows.forEach((validRow, index) => {
-        // Find the corresponding processedRow by matching the unique key columns
-        const matchingProcessedRow = processedRows.find(procRow => {
-          return uniqueCheck.columns.every(dbCol => {
-            const excelCol = Array.from(excelToDbMap.entries())
-              .find(([, db]) => db === dbCol)?.[0];
-            const validValue = String(validRow[dbCol] || '').toLowerCase().trim();
-            const procValue = excelCol
-              ? String(procRow[excelCol] || '').toLowerCase().trim()
-              : String(procRow[dbCol] || '').toLowerCase().trim();
-            return validValue === procValue;
-          });
-        });
-
-        if (matchingProcessedRow && matchingProcessedRow._existingId) {
-          validRow._existingId = matchingProcessedRow._existingId;
+    // Build a map from valid rows back to their original processedRows (for related inserts)
+    // The validation creates transformed rows with DB column names only,
+    // but related inserts need access to original Excel column values.
+    const validRowOriginalData: Record<string, unknown>[] = [];
+    {
+      let validIndex = 0;
+      const invalidRowNumbers = new Set(validationResult.invalidRows.map(r => r.row));
+      for (let i = 0; i < processedRows.length; i++) {
+        if (!invalidRowNumbers.has(i + 1)) {
+          validRowOriginalData.push(processedRows[i]);
+          // Preserve _existingId for upsert mode
+          if (processedRows[i]._existingId) {
+            validationResult.validRows[validIndex]._existingId = processedRows[i]._existingId;
+          }
+          validIndex++;
         }
-      });
+      }
     }
 
     // Add lookup errors to validation
@@ -442,7 +444,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    for (const row of rowsToInsert) {
+    for (let rowIdx = 0; rowIdx < rowsToInsert.length; rowIdx++) {
+      const row = rowsToInsert[rowIdx];
+      const originalRow = validRowOriginalData[rowIdx] || row;  // Original Excel data for related inserts
       // Apply static default values to the row
       for (const dv of staticDefaultValues) {
         if (row[dv.dbColumn] === undefined || row[dv.dbColumn] === null) {
@@ -503,12 +507,13 @@ export async function POST(request: NextRequest) {
       }
 
       // Process related inserts if we have a parent ID
+      // Use originalRow for Excel column access since validRows only have DB column names
       if (parentId && relatedInserts.length > 0) {
         for (const relatedInsert of relatedInserts) {
           // Check condition - all source columns must have values
           if (relatedInsert.condition?.sourceColumns) {
             const hasAllValues = relatedInsert.condition.sourceColumns.every((col) => {
-              const val = row[col];
+              const val = originalRow[col];
               return val !== undefined && val !== null && val !== '';
             });
             if (!hasAllValues) continue;
@@ -526,13 +531,21 @@ export async function POST(request: NextRequest) {
             } else if (col.source === 'static') {
               relatedValues.push(col.staticValue);
             } else if (col.source === 'excel' && col.excelColumn) {
-              relatedValues.push(row[col.excelColumn] ?? null);
+              relatedValues.push(originalRow[col.excelColumn] ?? null);
             } else if (col.source === 'lookup' && col.lookupConfig) {
               const cacheKey = `${col.lookupConfig.lookupTable}.${col.lookupConfig.lookupColumn}`;
               const cache = relatedLookupCaches.get(cacheKey);
-              const sourceVal = row[col.lookupConfig.sourceColumn];
+              const sourceVal = originalRow[col.lookupConfig.sourceColumn];
               const lookupKey = String(sourceVal || '').toLowerCase().trim();
               relatedValues.push(cache?.get(lookupKey) ?? null);
+            } else if (col.source === 'jsonb' && col.jsonbFields) {
+              // Build a JSON object from multiple Excel columns
+              const jsonObj: Record<string, unknown> = {};
+              for (const field of col.jsonbFields) {
+                const val = originalRow[field.excelColumn];
+                jsonObj[field.jsonKey] = val !== undefined && val !== null && val !== '' ? val : '';
+              }
+              relatedValues.push(JSON.stringify(jsonObj));
             } else {
               relatedValues.push(null);
             }

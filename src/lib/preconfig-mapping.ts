@@ -14,6 +14,11 @@ export interface UniqueCheckConfig {
   mode: 'skip' | 'error' | 'upsert';  // skip = skip duplicates, error = report as error, upsert = update existing
 }
 
+export interface JsonbFieldMapping {
+  jsonKey: string;             // Key in the JSON object (e.g., "address_line1")
+  excelColumn: string;         // Excel column to get value from
+}
+
 export interface RelatedInsertConfig {
   tableName: string;           // Table to insert into (e.g., tb_unit_conversion)
   condition?: {                // Only insert if these columns have values
@@ -21,7 +26,7 @@ export interface RelatedInsertConfig {
   };
   columns: {
     dbColumn: string;          // Column in the related table
-    source: 'excel' | 'lookup' | 'static' | 'parent_id';  // Where to get the value
+    source: 'excel' | 'lookup' | 'static' | 'parent_id' | 'jsonb';  // Where to get the value
     excelColumn?: string;      // If source is 'excel', the Excel column name
     lookupConfig?: {           // If source is 'lookup'
       sourceColumn: string;    // Excel column to lookup
@@ -30,6 +35,7 @@ export interface RelatedInsertConfig {
       lookupResultColumn: string;
     };
     staticValue?: string | number | boolean;  // If source is 'static'
+    jsonbFields?: JsonbFieldMapping[];  // If source is 'jsonb', maps multiple Excel columns into a JSON object
   }[];
 }
 
@@ -353,16 +359,16 @@ export const PRECONFIG_STEPS: PreconfigStep[] = [
     sheetName: 'Vendor',
     tableName: 'tb_vendor',
     displayName: 'Vendors',
-    description: 'Vendor/Supplier master data (with tax profile lookup and contact info)',
+    description: 'Vendor/Supplier master data (with tax profile lookup, contact, and address)',
     columnMappings: [
-      { excelColumn: 'VnCode', dbColumn: 'code' },
-      { excelColumn: 'VnName', dbColumn: 'name' },
-      { excelColumn: 'Active', dbColumn: 'is_active' },
-      { excelColumn: 'TaxProfileCode1', dbColumn: 'tax_profile_name' },
+      { excelColumn: 'code', dbColumn: 'code' },
+      { excelColumn: 'name', dbColumn: 'name' },
+      { excelColumn: 'active', dbColumn: 'is_active' },
+      { excelColumn: 'TaxProfileCode', dbColumn: 'tax_profile_name' },
     ],
     lookups: [
       {
-        sourceColumn: 'TaxProfileCode1',
+        sourceColumn: 'TaxProfileCode',
         targetColumn: 'tax_profile_id',
         lookupTable: 'tb_tax_profile',
         lookupColumn: 'name',
@@ -377,27 +383,32 @@ export const PRECONFIG_STEPS: PreconfigStep[] = [
       {
         tableName: 'tb_vendor_contact',
         condition: {
-          sourceColumns: ['VnPayee'],
+          sourceColumns: ['payee'],
         },
         columns: [
           { dbColumn: 'vendor_id', source: 'parent_id' },
-          { dbColumn: 'name', source: 'excel', excelColumn: 'VnPayee' },
-          { dbColumn: 'phone', source: 'excel', excelColumn: 'VnTel' },
-          { dbColumn: 'email', source: 'excel', excelColumn: 'VnEmail' },
+          { dbColumn: 'name', source: 'excel', excelColumn: 'payee' },
+          { dbColumn: 'phone', source: 'excel', excelColumn: 'telephone' },
+          { dbColumn: 'email', source: 'excel', excelColumn: 'email' },
           { dbColumn: 'is_primary', source: 'static', staticValue: true },
         ],
       },
       {
-        tableName: 'tb_vendor_contact',
+        tableName: 'tb_vendor_address',
         condition: {
-          sourceColumns: ['Vn2Payee'],
+          sourceColumns: ['address_line1'],
         },
         columns: [
           { dbColumn: 'vendor_id', source: 'parent_id' },
-          { dbColumn: 'name', source: 'excel', excelColumn: 'Vn2Payee' },
-          { dbColumn: 'phone', source: 'excel', excelColumn: 'Vn2Tel' },
-          { dbColumn: 'email', source: 'excel', excelColumn: 'Vn2Email' },
-          { dbColumn: 'is_primary', source: 'static', staticValue: false },
+          { dbColumn: 'address_type', source: 'static', staticValue: 'contact_address' },
+          { dbColumn: 'data', source: 'jsonb', jsonbFields: [
+            { jsonKey: 'address_line1', excelColumn: 'address_line1' },
+            { jsonKey: 'address_line2', excelColumn: 'address_line2' },
+            { jsonKey: 'city', excelColumn: 'city' },
+            { jsonKey: 'province', excelColumn: 'province' },
+            { jsonKey: 'postal_code', excelColumn: 'postal_code' },
+            { jsonKey: 'country', excelColumn: 'country' },
+          ]},
         ],
       },
     ],
