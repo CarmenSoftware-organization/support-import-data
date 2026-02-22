@@ -51,17 +51,20 @@ A Next.js web application for importing data from Excel files into an existing P
 2. App generates empty Excel file with column headers matching table structure
 3. User downloads template to fill in data
 
-### Configuration Flow
+### Configuration Flow (Multi-Database)
 1. User navigates to Settings page
-2. User enters PostgreSQL connection details (host, port, database, username, password)
-3. User can test connection before saving
-4. Configuration is saved locally (db-config.json)
-5. App uses saved configuration to connect to database
+2. User can add multiple PostgreSQL connections, each with: name, host, port, database, username, password, and default schema
+3. Each connection gets a unique UUID-based ID (immutable once created)
+4. User can test any connection before saving
+5. User sets one connection as the default (used for table browsing and basic import/export)
+6. Configurations are stored in `db-config.json` (gitignored for security)
+7. Home page shows a connection selector dropdown to switch between databases
+8. Preconfiguration steps can target specific connections (e.g., Company Profile imports to CARMEN_SYSTEM schema)
 
 ### Preconfiguration Wizard Flow
 The Preconfiguration Wizard provides a guided, step-by-step import process for master data using a pre-structured Excel file (Preconfig.xlsx) with advanced features like lookup handling, duplicate detection, and table truncation.
 
-**Use Case**: Initial system setup importing interdependent master data (currencies, units, tax profiles, delivery points, departments, locations, item groups, products).
+**Use Case**: Initial system setup importing interdependent master data (company profiles, currencies, units, tax profiles, delivery points, departments, locations, item groups, products, vendors).
 
 **Flow**:
 1. **Upload Phase**:
@@ -135,13 +138,15 @@ The Preconfiguration Wizard provides a guided, step-by-step import process for m
    - Options to import another file or return to home
 
 **Key Features**:
-- **Multi-Sheet Support**: Handles multiple interdependent sheets in order
+- **Multi-Sheet Support**: Handles multiple interdependent sheets in order (12 steps)
+- **Multi-Database Support**: Steps can target different database connections (e.g., Company Profile → CARMEN_SYSTEM schema)
 - **Advanced Validation**: Type checking, required fields, lookups, duplicates
 - **Auto-Lookup & Create**: Automatically resolves foreign keys and creates missing lookup records
 - **Duplicate Handling**: Three modes - skip, error, or upsert existing records
-- **Related Record Creation**: Automatically inserts related records (e.g., unit conversions for products)
+- **Related Record Creation**: Automatically inserts related records (e.g., unit conversions for products, contact/address for vendors)
+- **JSONB Field Mapping**: Maps multiple Excel columns into a single JSONB database column (e.g., vendor address)
 - **Table Truncation**: Optional data clearing with cascade support
-- **Default Values**: Static and dynamic defaults (e.g., CURRENT_TIMESTAMP)
+- **Default Values**: Static and dynamic defaults (e.g., CURRENT_TIMESTAMP); supports string, number, and boolean static values
 - **Progress Tracking**: Visual status for each step with import counts
 - **Error Recovery**: Can retry validation or skip problematic steps
 - **Comprehensive Reporting**: Detailed counts and error messages
@@ -150,7 +155,7 @@ The Preconfiguration Wizard provides a guided, step-by-step import process for m
 
 ### Tech Stack
 - **Runtime**: Bun
-- **Framework**: Next.js 14 (App Router)
+- **Framework**: Next.js 16 (App Router)
 - **Language**: TypeScript
 - **Database**: PostgreSQL (existing database)
 - **DB Client**: pg (node-postgres) for direct queries and introspection
@@ -158,13 +163,18 @@ The Preconfiguration Wizard provides a guided, step-by-step import process for m
 - **UI**: Tailwind CSS + shadcn/ui
 - **File Upload**: react-dropzone
 
-### Database Connection
-- Connection can be configured via:
-  1. **Settings page** (recommended): UI form to enter host, port, database, username, password
-  2. **Environment variable**: `DATABASE_URL` as fallback
-- Configuration is stored in `db-config.json` (gitignored for security)
+### Database Connection (Multi-Database)
+- Supports multiple database connections simultaneously, each with a UUID-based immutable ID
+- Connections can be configured via:
+  1. **Settings page** (recommended): UI form to add/edit/delete connections with name, host, port, database, username, password, and default schema
+  2. **Environment variable**: `DATABASE_URL` as fallback for initial connection
+- One connection is designated as the **default** (used for table browsing and basic operations)
+- Each connection specifies a default schema (e.g., "public", "CARMEN_SYSTEM")
+- Configuration is stored in `db-config.json` (gitignored for security) with migration support from legacy single-connection format
+- Connection pooling uses Map-based pool management keyed by connection ID
+- All database operations accept an optional `connectionId` parameter to target a specific connection
 - App introspects database to get:
-  - List of tables
+  - List of tables (filtered by schema)
   - Column names and data types
   - Primary keys and constraints
   - Required vs nullable columns
@@ -195,7 +205,10 @@ The Preconfiguration Wizard provides a guided, step-by-step import process for m
   /preconfig
     /wizard/page.tsx              # Preconfiguration wizard
   /api
-    /config/route.ts              # Get/Save/Delete config
+    /config/list/route.ts         # List all connections
+    /config/save/route.ts         # Save/update connection
+    /config/delete/route.ts       # Delete connection
+    /config/set-default/route.ts  # Set default connection
     /config/test/route.ts         # Test connection
     /tables/route.ts              # List all tables
     /tables/[table]/route.ts      # Get table schema
@@ -315,11 +328,39 @@ The Preconfiguration Wizard extends the basic import functionality with sophisti
 ```
 
 **Example**: Product import creates unit conversion records in `tb_unit_conversion` table:
-- For order unit conversion (if Order Unit and Order Conv. Rate columns have values)
-- For inventory unit conversion (if Inventory Unit and Inventory Conv. Rate have values)
-- For sales unit conversion (if Sales Unit and Sales Conv. Rate have values)
+- For order unit conversion (if Order unit and Order Conv. Rate columns have values)
+- For recipe unit conversion (if Recipe unit and Recipe Conv. Rate have values)
 
-#### 5. Table Truncation
+Vendor import creates related records in two tables:
+- `tb_vendor_contact`: Contact info (payee, telephone, email) with `is_primary: true`
+- `tb_vendor_address`: Address data stored as JSONB (address_line1, address_line2, city, province, postal_code, country)
+
+#### 5. JSONB Field Mapping
+**Purpose**: Map multiple Excel columns into a single JSONB database column.
+
+**Configuration**:
+```typescript
+{
+  dbColumn: string;               // Database column (must be json/jsonb type)
+  source: 'jsonb';
+  jsonbFields: {
+    jsonKey: string;              // Key in the JSON object
+    excelColumn: string;          // Excel column to get value from
+  }[];
+}
+```
+
+**Behavior**:
+- Collects values from multiple Excel columns
+- Constructs a JSON object with specified keys
+- Stores the JSON object in the JSONB column
+- Only includes keys where the Excel column has a value
+
+**Example**: Vendor address is stored as JSONB in `tb_vendor_address.data`:
+- Maps `address_line1`, `address_line2`, `city`, `province`, `postal_code`, `country` Excel columns
+- Into a single JSON object: `{"address_line1": "...", "city": "...", ...}`
+
+#### 6. Table Truncation
 **Purpose**: Clear existing data before import for clean slate.
 
 **Features**:
@@ -331,24 +372,26 @@ The Preconfiguration Wizard extends the basic import functionality with sophisti
 
 **Use Case**: Refreshing master data or fixing import errors by reimporting from scratch.
 
-#### 6. Multi-Sheet Import Order
+#### 7. Multi-Sheet Import Order
 **Purpose**: Import sheets in dependency-aware order.
 
-**Preconfig.xlsx Import Order**:
-1. Currency (no dependencies)
-2. Unit (no dependencies)
-3. Tax Profile (no dependencies)
-4. Delivery Point (no dependencies)
-5. Department (no dependencies)
-6. Product Category (no dependencies)
-7. Store Location (depends on Delivery Point)
-8. Product Subcategory (depends on Product Category)
-9. Item Group (depends on Product Subcategory)
-10. Product (depends on Unit, Item Group, Tax Profile)
+**Preconfig.xlsx Import Order** (12 steps):
+1. Company Profile (no dependencies, imports to CARMEN_SYSTEM schema via specific connection)
+2. Currency (no dependencies)
+3. Unit (no dependencies)
+4. Tax Profile (no dependencies)
+5. Delivery Point (no dependencies)
+6. Department (no dependencies)
+7. Product Category (no dependencies, from Item Group sheet)
+8. Store Location (depends on Delivery Point)
+9. Product Subcategory (depends on Product Category, from Item Group sheet)
+10. Item Group (depends on Product Subcategory, from Item Group sheet)
+11. Product (depends on Unit, Item Group, Tax Profile; creates order/recipe unit conversions)
+12. Vendor (depends on Tax Profile; creates contact and JSONB address records)
 
 **Configuration**: Defined in `lib/preconfig-mapping.ts` with `PRECONFIG_STEPS` array specifying order and dependencies.
 
-#### 7. Validation & Import Phases
+#### 8. Validation & Import Phases
 **Two-Phase Process**:
 
 **Phase 1: Validation** (`skipInvalid: false`)
@@ -384,10 +427,11 @@ The Preconfiguration Wizard extends the basic import functionality with sophisti
 
 ## API Endpoints
 
-### Configuration
-- `GET /api/config` - Get current configuration status
-- `POST /api/config` - Save new configuration
-- `DELETE /api/config` - Remove configuration
+### Configuration (Multi-Database)
+- `GET /api/config/list` - List all saved database connections
+- `POST /api/config/save` - Save or update a connection (UUID assigned on creation)
+- `POST /api/config/delete` - Delete a connection by ID
+- `POST /api/config/set-default` - Set a connection as the default
 - `POST /api/config/test` - Test connection without saving
 
 ### Tables
@@ -417,10 +461,11 @@ The Preconfiguration Wizard extends the basic import functionality with sophisti
 ### Preconfig.xlsx
 Location: `/sample data/Preconfig.xlsx`
 
-A pre-structured Excel template demonstrating the expected format for preconfiguration imports. Contains 10 worksheets with sample master data:
+A pre-structured Excel template demonstrating the expected format for preconfiguration imports. Contains 12 worksheets with sample master data:
 
 | Sheet Name | Target Table | Description | Key Features |
 |---|---|---|---|
+| Company Profile | tb_business_unit | Business unit / company info | Imports to CARMEN_SYSTEM schema via specific connection, upsert by code |
 | Currency | tb_currency | Currency definitions | Code, Name, Symbol, Exchange Rate |
 | Unit | tb_unit | Units of measurement | Code, Description |
 | Tax Profile | tb_tax_profile | Tax configurations | Name, Value |
@@ -428,7 +473,8 @@ A pre-structured Excel template demonstrating the expected format for preconfigu
 | Department | tb_department | Organization departments | Code, Description |
 | Store Location | tb_location | Storage locations | Auto-creates delivery points via lookup |
 | Item Group | Multiple tables | Category hierarchy | Creates categories, subcategories, and item groups |
-| Product list | tb_product | Product master data | Creates products with unit conversions |
+| Product list | tb_product | Product master data | Creates products with order/recipe unit conversions |
+| Vendor | tb_vendor | Vendor/Supplier master data | Tax profile lookup, creates contact and JSONB address records |
 
 **Purpose**:
 - Serves as template for users setting up their own configuration files
@@ -436,9 +482,11 @@ A pre-structured Excel template demonstrating the expected format for preconfigu
 - Shows relationships between sheets (e.g., Location depends on Delivery Point)
 - Includes sample data for testing the import wizard
 
-**Import Order**: Sheets are imported in dependency-aware order:
-1. Independent tables first (Currency, Unit, Tax Profile, Delivery Point, Department)
-2. Dependent tables next (Store Location, Item Group hierarchy, Product)
+**Import Order**: Sheets are imported in dependency-aware order (12 steps):
+1. Company Profile (no dependencies, imports to separate CARMEN_SYSTEM schema)
+2. Independent tables (Currency, Unit, Tax Profile, Delivery Point, Department)
+3. Category hierarchy (Product Category, Store Location, Product Subcategory, Item Group)
+4. Complex dependents (Product with unit conversions, Vendor with contact and JSONB address)
 
 ## Environment Variables (Optional)
 ```
