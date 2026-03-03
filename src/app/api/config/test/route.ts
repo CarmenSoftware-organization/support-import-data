@@ -24,11 +24,27 @@ export async function POST(request: NextRequest) {
       schema: body.schema || 'public',
     };
 
-    const connectionString = `postgresql://${encodeURIComponent(config.username)}:${encodeURIComponent(config.password)}@${config.host}:${config.port}/${config.database}${config.ssl ? '?sslmode=require' : ''}`;
+    const hasCerts = !!(body.certs?.ca);
+    const sslParam = config.ssl && !hasCerts ? '?sslmode=require' : '';
+    const connectionString = `postgresql://${encodeURIComponent(config.username)}:${encodeURIComponent(config.password)}@${config.host}:${config.port}/${config.database}${sslParam}`;
+
+    // Build SSL options from in-memory cert content (no file I/O)
+    let sslOptions: undefined | Record<string, unknown>;
+    if (config.ssl) {
+      if (hasCerts) {
+        sslOptions = { rejectUnauthorized: true };
+        if (body.certs.ca) sslOptions.ca = Buffer.from(body.certs.ca, 'base64');
+        if (body.certs.cert) sslOptions.cert = Buffer.from(body.certs.cert, 'base64');
+        if (body.certs.key) sslOptions.key = Buffer.from(body.certs.key, 'base64');
+      } else {
+        sslOptions = { rejectUnauthorized: false };
+      }
+    }
 
     const testPool = new Pool({
       connectionString,
       connectionTimeoutMillis: 5000,
+      ...(sslOptions ? { ssl: sslOptions } : {}),
     });
 
     try {

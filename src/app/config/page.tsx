@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -33,11 +33,34 @@ interface ConfigForm {
   schema: string;
 }
 
+interface CertFiles {
+  ca: File | null;
+  cert: File | null;
+  key: File | null;
+}
+
 interface Connection {
   id: string;        // UUID
   name: string;      // User-friendly name
   config: ConfigForm;
   isDefault: boolean;
+  hasCaCert?: boolean;
+  hasClientCert?: boolean;
+  hasClientKey?: boolean;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Strip data URL prefix (e.g., "data:application/x-pem-file;base64,")
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
 export default function ConfigPage() {
@@ -54,6 +77,7 @@ export default function ConfigPage() {
     ssl: false,
     schema: 'public',
   });
+  const [certFiles, setCertFiles] = useState<CertFiles>({ ca: null, cert: null, key: null });
   const [connectionId, setConnectionId] = useState('');  // UUID when editing
   const [connectionName, setConnectionName] = useState('');  // User-friendly name
   const [schemas, setSchemas] = useState<string[]>([]);
@@ -64,6 +88,10 @@ export default function ConfigPage() {
     success: boolean;
     message: string;
   } | null>(null);
+
+  const caInputRef = useRef<HTMLInputElement>(null);
+  const certInputRef = useRef<HTMLInputElement>(null);
+  const keyInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadConnections();
@@ -80,6 +108,9 @@ export default function ConfigPage() {
           name: conn.name || id,  // Fallback to ID if name not present
           config: conn as ConfigForm,
           isDefault: id === data.default,
+          hasCaCert: conn.hasCaCert,
+          hasClientCert: conn.hasClientCert,
+          hasClientKey: conn.hasClientKey,
         }));
         setConnections(connList);
         setDefaultConnectionId(data.default || '');
@@ -102,6 +133,7 @@ export default function ConfigPage() {
       ssl: false,
       schema: 'public',
     });
+    setCertFiles({ ca: null, cert: null, key: null });
     setSchemas([]);
     setTestResult(null);
     setIsDialogOpen(true);
@@ -116,6 +148,7 @@ export default function ConfigPage() {
       port: String(conn.config.port),
       password: '', // Don't pre-fill password for security
     });
+    setCertFiles({ ca: null, cert: null, key: null });
     setSchemas([]);
     setTestResult(null);
     setIsDialogOpen(true);
@@ -134,17 +167,42 @@ export default function ConfigPage() {
     setForm((prev) => ({ ...prev, schema: value }));
   };
 
+  const handleCertFileChange = (type: keyof CertFiles) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    setCertFiles((prev) => ({ ...prev, [type]: file }));
+    setTestResult(null);
+  };
+
+  const handleRemoveCert = (type: keyof CertFiles) => {
+    setCertFiles((prev) => ({ ...prev, [type]: null }));
+    // Reset the file input
+    const ref = type === 'ca' ? caInputRef : type === 'cert' ? certInputRef : keyInputRef;
+    if (ref.current) ref.current.value = '';
+    setTestResult(null);
+  };
+
+  async function buildCertsPayload(): Promise<Record<string, string> | undefined> {
+    if (!certFiles.ca && !certFiles.cert && !certFiles.key) return undefined;
+    const payload: Record<string, string> = {};
+    if (certFiles.ca) payload.ca = await fileToBase64(certFiles.ca);
+    if (certFiles.cert) payload.cert = await fileToBase64(certFiles.cert);
+    if (certFiles.key) payload.key = await fileToBase64(certFiles.key);
+    return Object.keys(payload).length > 0 ? payload : undefined;
+  }
+
   const handleTestConnection = async () => {
     setIsTesting(true);
     setTestResult(null);
 
     try {
+      const certs = await buildCertsPayload();
       const response = await fetch('/api/config/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...form,
           port: parseInt(form.port, 10),
+          ...(certs ? { certs } : {}),
         }),
       });
 
@@ -190,6 +248,7 @@ export default function ConfigPage() {
     setIsSaving(true);
 
     try {
+      const certs = await buildCertsPayload();
       const response = await fetch('/api/config/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -201,6 +260,7 @@ export default function ConfigPage() {
             port: parseInt(form.port, 10),
           },
           setAsDefault: !editingConnection, // Set as default if it's a new connection
+          ...(certs ? { certs } : {}),
         }),
       });
 
@@ -258,6 +318,14 @@ export default function ConfigPage() {
     } catch (err) {
       toast.error('Failed to set default connection');
     }
+  };
+
+  /** Whether the editing connection already has a cert of a given type on the server */
+  const hasExistingCert = (type: 'ca' | 'cert' | 'key') => {
+    if (!editingConnection) return false;
+    if (type === 'ca') return editingConnection.hasCaCert;
+    if (type === 'cert') return editingConnection.hasClientCert;
+    return editingConnection.hasClientKey;
   };
 
   return (
@@ -346,7 +414,17 @@ export default function ConfigPage() {
                     <span className="text-muted-foreground">Username:</span> {conn.config.username}
                   </div>
                   <div>
-                    <span className="text-muted-foreground">SSL:</span> {conn.config.ssl ? 'Yes' : 'No'}
+                    <span className="text-muted-foreground">SSL:</span>{' '}
+                    {conn.config.ssl ? (
+                      <>
+                        Yes
+                        {conn.hasCaCert && (
+                          <span className="ml-1 text-xs text-green-600 dark:text-green-400">(CA cert)</span>
+                        )}
+                      </>
+                    ) : (
+                      'No'
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -487,6 +565,110 @@ export default function ConfigPage() {
                 Use SSL connection
               </label>
             </div>
+
+            {/* SSL Certificate Files */}
+            {form.ssl && (
+              <div className="border rounded-lg p-4 space-y-3 bg-muted/30">
+                <p className="text-sm font-medium">SSL Certificates (optional)</p>
+                <p className="text-xs text-muted-foreground">
+                  Upload certificate files for verified SSL connections (e.g., AWS RDS, Google Cloud SQL, Supabase).
+                  Without certificates, the connection uses unverified SSL.
+                </p>
+
+                {/* CA Certificate */}
+                <div>
+                  <label className="text-xs font-medium mb-1 block">CA Certificate</label>
+                  {hasExistingCert('ca') && !certFiles.ca ? (
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary" className="text-xs">Uploaded</Badge>
+                      <span className="text-xs text-muted-foreground">Upload a new file to replace</span>
+                    </div>
+                  ) : null}
+                  <div className="flex items-center gap-2 mt-1">
+                    <input
+                      ref={caInputRef}
+                      type="file"
+                      accept=".pem,.crt,.cer"
+                      onChange={handleCertFileChange('ca')}
+                      className="text-xs file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
+                    />
+                    {certFiles.ca && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => handleRemoveCert('ca')}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Client Certificate */}
+                <div>
+                  <label className="text-xs font-medium mb-1 block">Client Certificate</label>
+                  {hasExistingCert('cert') && !certFiles.cert ? (
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary" className="text-xs">Uploaded</Badge>
+                      <span className="text-xs text-muted-foreground">Upload a new file to replace</span>
+                    </div>
+                  ) : null}
+                  <div className="flex items-center gap-2 mt-1">
+                    <input
+                      ref={certInputRef}
+                      type="file"
+                      accept=".pem,.crt,.cer"
+                      onChange={handleCertFileChange('cert')}
+                      className="text-xs file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
+                    />
+                    {certFiles.cert && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => handleRemoveCert('cert')}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Client Key */}
+                <div>
+                  <label className="text-xs font-medium mb-1 block">Client Key</label>
+                  {hasExistingCert('key') && !certFiles.key ? (
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary" className="text-xs">Uploaded</Badge>
+                      <span className="text-xs text-muted-foreground">Upload a new file to replace</span>
+                    </div>
+                  ) : null}
+                  <div className="flex items-center gap-2 mt-1">
+                    <input
+                      ref={keyInputRef}
+                      type="file"
+                      accept=".pem,.key"
+                      onChange={handleCertFileChange('key')}
+                      className="text-xs file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
+                    />
+                    {certFiles.key && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => handleRemoveCert('key')}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {testResult && (
               <div

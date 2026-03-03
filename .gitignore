@@ -36,6 +36,9 @@ yarn-error.log*
 # database config (contains credentials)
 db-config.json
 
+# SSL certificate files
+/certs/
+
 # vercel
 .vercel
 

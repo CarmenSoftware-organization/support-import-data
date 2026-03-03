@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'crypto';
 import { Pool } from 'pg';
-import { saveConnection, DatabaseConfig } from '@/lib/config';
+import { saveConnection, saveCertFile, DatabaseConfig } from '@/lib/config';
 import { resetPool } from '@/lib/db';
 
 // POST - Save or update a connection
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { connectionId, name, config, setAsDefault } = body;
+    const { connectionId, name, config, setAsDefault, certs } = body;
 
     // Validate required fields
     if (!name || typeof name !== 'string') {
@@ -24,20 +25,31 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const dbConfig = {
-      host: config.host,
-      port: config.port || 5432,
-      database: config.database,
-      username: config.username,
-      password: config.password || '',
-      ssl: config.ssl || false,
-      schema: config.schema || 'public',
-    };
+    const ssl = config.ssl || false;
+    const hasCerts = !!(certs?.ca);
+
+    // Build connection string (without sslmode param when certs are provided — handled via options)
+    const sslParam = ssl && !hasCerts ? '?sslmode=require' : '';
+    const connectionString = `postgresql://${encodeURIComponent(config.username)}:${encodeURIComponent(config.password || '')}@${config.host}:${config.port || 5432}/${config.database}${sslParam}`;
+
+    // Build SSL options for test pool
+    let sslOptions: undefined | Record<string, unknown>;
+    if (ssl) {
+      if (hasCerts) {
+        sslOptions = { rejectUnauthorized: true };
+        if (certs.ca) sslOptions.ca = Buffer.from(certs.ca, 'base64');
+        if (certs.cert) sslOptions.cert = Buffer.from(certs.cert, 'base64');
+        if (certs.key) sslOptions.key = Buffer.from(certs.key, 'base64');
+      } else {
+        sslOptions = { rejectUnauthorized: false };
+      }
+    }
 
     // Test connection before saving
-    const connectionString = `postgresql://${encodeURIComponent(dbConfig.username)}:${encodeURIComponent(dbConfig.password)}@${dbConfig.host}:${dbConfig.port}/${dbConfig.database}${dbConfig.ssl ? '?sslmode=require' : ''}`;
-
-    const testPool = new Pool({ connectionString });
+    const testPool = new Pool({
+      connectionString,
+      ...(sslOptions ? { ssl: sslOptions } : {}),
+    });
     try {
       const client = await testPool.connect();
       await client.query('SELECT 1');
@@ -52,8 +64,36 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Save connection and reset its pool (returns UUID)
-    const savedId = saveConnection(connectionId || null, name, dbConfig, setAsDefault);
+    // Determine the connection ID (use existing or it will be generated)
+    const id = connectionId || randomUUID();
+
+    // Prepare the config to save
+    const dbConfig: Omit<DatabaseConfig, 'id' | 'name'> = {
+      host: config.host,
+      port: config.port || 5432,
+      database: config.database,
+      username: config.username,
+      password: config.password || '',
+      ssl,
+      schema: config.schema || 'public',
+    };
+
+    // Save cert files if provided
+    if (certs?.ca) {
+      const caContent = Buffer.from(certs.ca, 'base64').toString('utf-8');
+      dbConfig.sslCaCert = saveCertFile(id, 'ca', caContent);
+    }
+    if (certs?.cert) {
+      const certContent = Buffer.from(certs.cert, 'base64').toString('utf-8');
+      dbConfig.sslClientCert = saveCertFile(id, 'cert', certContent);
+    }
+    if (certs?.key) {
+      const keyContent = Buffer.from(certs.key, 'base64').toString('utf-8');
+      dbConfig.sslClientKey = saveCertFile(id, 'key', keyContent);
+    }
+
+    // Save connection and reset its pool (pass pre-generated id so cert filenames match)
+    const savedId = saveConnection(id, name, dbConfig, setAsDefault);
     await resetPool(savedId);
 
     return NextResponse.json({

@@ -1,10 +1,39 @@
-import { Pool } from 'pg';
+import fs from 'fs';
+import { Pool, PoolConfig } from 'pg';
 import { TableInfo, ColumnInfo, TableSchema } from './types';
-import { getConnectionString } from './config';
+import { getConnectionString, getConfig, getCertPath } from './config';
 
 // Map of connection ID to pool instances
 const pools = new Map<string, Pool>();
 const connectionStrings = new Map<string, string>();
+
+/** Build SSL options object from cert files for a connection. */
+function buildSslOptions(connectionId?: string): PoolConfig['ssl'] {
+  const config = getConfig(connectionId);
+  if (!config || !config.ssl) return undefined;
+
+  // If cert files are referenced in config, read them
+  if (config.sslCaCert) {
+    const sslOpts: { rejectUnauthorized: boolean; ca?: Buffer; cert?: Buffer; key?: Buffer } = {
+      rejectUnauthorized: true,
+    };
+    const caPath = getCertPath(config.id, 'ca');
+    if (fs.existsSync(caPath)) sslOpts.ca = fs.readFileSync(caPath);
+
+    if (config.sslClientCert) {
+      const certPath = getCertPath(config.id, 'cert');
+      if (fs.existsSync(certPath)) sslOpts.cert = fs.readFileSync(certPath);
+    }
+    if (config.sslClientKey) {
+      const keyPath = getCertPath(config.id, 'key');
+      if (fs.existsSync(keyPath)) sslOpts.key = fs.readFileSync(keyPath);
+    }
+    return sslOpts;
+  }
+
+  // ssl: true but no certs — use rejectUnauthorized: false (equivalent to sslmode=require)
+  return { rejectUnauthorized: false };
+}
 
 export function getPool(connectionId?: string): Pool {
   const id = connectionId || 'main';
@@ -26,7 +55,8 @@ export function getPool(connectionId?: string): Pool {
 
   // Create new pool if doesn't exist
   if (!pools.has(id)) {
-    const pool = new Pool({ connectionString });
+    const ssl = buildSslOptions(connectionId);
+    const pool = new Pool({ connectionString, ...(ssl ? { ssl } : {}) });
     pools.set(id, pool);
     connectionStrings.set(id, connectionString);
   }

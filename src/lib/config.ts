@@ -12,7 +12,14 @@ export interface DatabaseConfig {
   password: string;
   ssl: boolean;
   schema: string;
+  sslCaCert?: string;      // Filename in certs/ dir (e.g., "{id}-ca.pem")
+  sslClientCert?: string;  // Filename in certs/ dir (e.g., "{id}-cert.pem")
+  sslClientKey?: string;   // Filename in certs/ dir (e.g., "{id}-key.pem")
 }
+
+export type CertType = 'ca' | 'cert' | 'key';
+
+export const CERTS_DIR = path.join(process.cwd(), 'certs');
 
 export interface MultiDatabaseConfig {
   connections: Record<string, DatabaseConfig>;  // Key is UUID
@@ -20,6 +27,51 @@ export interface MultiDatabaseConfig {
 }
 
 const CONFIG_FILE = path.join(process.cwd(), 'db-config.json');
+
+// --- SSL Certificate helpers ---
+
+function ensureCertsDir(): void {
+  if (!fs.existsSync(CERTS_DIR)) {
+    fs.mkdirSync(CERTS_DIR, { recursive: true });
+  }
+}
+
+function certFilename(connectionId: string, type: CertType): string {
+  return `${connectionId}-${type}.pem`;
+}
+
+export function getCertPath(connectionId: string, type: CertType): string {
+  return path.join(CERTS_DIR, certFilename(connectionId, type));
+}
+
+/** Save a cert file to the certs/ directory. Content is raw PEM string. */
+export function saveCertFile(connectionId: string, type: CertType, content: string): string {
+  ensureCertsDir();
+  const filename = certFilename(connectionId, type);
+  const filePath = path.join(CERTS_DIR, filename);
+  fs.writeFileSync(filePath, content, { mode: 0o600 });
+  return filename;
+}
+
+/** Delete all cert files for a given connection. */
+export function deleteCertFiles(connectionId: string): void {
+  const types: CertType[] = ['ca', 'cert', 'key'];
+  for (const type of types) {
+    const filePath = getCertPath(connectionId, type);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  }
+}
+
+/** Check which cert files exist for a connection. */
+export function getCertStatus(connectionId: string): { hasCaCert: boolean; hasClientCert: boolean; hasClientKey: boolean } {
+  return {
+    hasCaCert: fs.existsSync(getCertPath(connectionId, 'ca')),
+    hasClientCert: fs.existsSync(getCertPath(connectionId, 'cert')),
+    hasClientKey: fs.existsSync(getCertPath(connectionId, 'key')),
+  };
+}
 
 // Legacy support: Read old single-config format and migrate to new format
 function migrateOldConfig(data: unknown): MultiDatabaseConfig | null {
@@ -155,6 +207,7 @@ export function deleteConnection(connectionId: string): void {
   if (!multiConfig) return;
 
   delete multiConfig.connections[connectionId];
+  deleteCertFiles(connectionId);
 
   // If we deleted the default, pick a new one
   if (multiConfig.default === connectionId) {
@@ -184,8 +237,10 @@ export function getConnectionString(connectionId?: string): string | null {
   // Then check config file
   const config = getConfig(connectionId);
   if (config) {
-    const { host, port, database, username, password, ssl } = config;
-    const sslParam = ssl ? '?sslmode=require' : '';
+    const { host, port, database, username, password, ssl, sslCaCert } = config;
+    // When cert files are provided, SSL is handled via the ssl options object in db.ts
+    // Only append sslmode=require when ssl is enabled but no certs are present
+    const sslParam = ssl && !sslCaCert ? '?sslmode=require' : '';
     return `postgresql://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${host}:${port}/${database}${sslParam}`;
   }
 
